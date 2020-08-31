@@ -10,6 +10,7 @@ This is a port of the Adafruit_CircuitPython_RFM69 library of which this repo is
 https://github.com/adafruit/Adafruit_CircuitPython_RFM69
 
 I would like to thank jerryn/jerryneedell for his assistance in getting me to this point.
+
 https://forums.adafruit.com/viewtopic.php?f=60&t=168167&start=15
 
 MicroPython RFM69 packet radio module.  This supports basic RadioHead-compatible sending and
