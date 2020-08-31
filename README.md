@@ -27,7 +27,7 @@ https://github.com/nohcpy/LoPPyIOT
 
 Usage Example
 =============
-See examples/rfm69_simpletest.py for a simple demo of the usage.
+See rfm69_simpletest.py for a simple demo of the usage.
 
 .. code-block:: python
 
