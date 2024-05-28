@@ -20,6 +20,8 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
+# Based on work of nohcpy (https://github.com/nohcpy) who ported the original Adafruit lib to micropython
+
 import time
 import random
 

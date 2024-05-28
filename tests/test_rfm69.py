@@ -1,22 +1,10 @@
-from micropython_rfm69 import *
+from rfm69 import RFM69
 from machine import SPI, Pin
 
-#ESP32 Example
-
 CS = Pin(5, Pin.OUT)
-RESET = Pin(22, Pin.OUT)
-spi = SPI(2, baudrate=5000000, polarity=0, phase=0, bits=8, firstbit=0, sck=Pin(18), mosi=Pin(23), miso=Pin(19))
-
-#ESP8266 Example
-#CS = Pin(2, Pin.OUT)
-#RESET = Pin(0, Pin.OUT)
-#spi = SPI(1, baudrate=5000000, polarity=0, phase=0)
-# Initialze RFM radio
-
-#Set Your Radio Freq here
-RADIO_FREQ_MHZ = 915.0
-
-rfm69 = micropython_rfm69.RFM69(spi, CS, RESET, RADIO_FREQ_MHZ)
+reset = Pin(22, Pin.OUT)
+spi = SPI(1, baudrate=5000000, polarity=0, phase=0, bits=8, firstbit=0, sck=Pin(18), mosi=Pin(23), miso=Pin(19))
+rfm69 = RFM69(spi, CS, reset, frequency=868.0)
 
 # Optionally set an encryption key (16 byte AES key). MUST match both
 # on the transmitter and receiver (or be set to None to disable/the default).
