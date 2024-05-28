@@ -22,10 +22,10 @@
 
 # Based on work of nohcpy (https://github.com/nohcpy) who ported the original Adafruit lib to micropython
 
+from micropython import const
 import time
 import random
 
-from micropython import const
 
 # Internal constants:
 _REG_FIFO = const(0x00)
@@ -371,6 +371,7 @@ class RFM69:
         # Grab the temperature value and convert it to Celsius.
         # This uses the same observed value formula from the RadioHead library.
         temp = self._read_u8(_REG_TEMP2)
+
         return 166.0 - temp
 
     @property
@@ -411,6 +412,7 @@ class RFM69:
         # according to datasheet.
         sync_word = bytearray(sync_word_length)
         self._read_into(_REG_SYNC_VALUE1, sync_word)
+
         return sync_word
 
     @sync_word.setter
@@ -435,6 +437,7 @@ class RFM69:
         """
         msb = self._read_u8(_REG_PREAMBLE_MSB)
         lsb = self._read_u8(_REG_PREAMBLE_LSB)
+
         return ((msb << 8) | lsb) & 0xFFFF
 
     @preamble_length.setter
@@ -456,14 +459,15 @@ class RFM69:
         lsb = self._read_u8(_REG_FRF_LSB)
         frf = ((msb << 16) | (mid << 8) | lsb) & 0xFFFFFF
         frequency = (frf * _FSTEP) / 1000000.0
+
         return frequency
 
     @frequency_mhz.setter
     def frequency_mhz(self, val):
         assert 290 <= val <= 1020
-        # Calculate FRF register 24-bit value using section 6.2 of the datasheet.
+        # Calculate FRF register 24-bit value using section 6.2 of the datasheet
         frf = int((val * 1000000.0) / _FSTEP) & 0xFFFFFF
-        # Extract byte values and update registers.
+        # Extract byte values and update registers
         msb = frf >> 16
         mid = (frf >> 8) & 0xFF
         lsb = frf & 0xFF
@@ -484,6 +488,7 @@ class RFM69:
         # Encryption is enabled so read the key and return it.
         key = bytearray(16)
         self._read_into(_REG_AES_KEY1, key)
+
         return key
 
     @encryption_key.setter
@@ -520,6 +525,7 @@ class RFM69:
         if not pa0 and pa1 and pa2 and self.high_power:
             # 5 to 20 dBm range
             return -11 + self.output_power
+
         raise RuntimeError("Power amplifiers in unknown state!")
 
     @tx_power.setter
@@ -668,6 +674,7 @@ class RFM69:
             self.listen()
         else:  # Enter idle mode to stop receiving other packets.
             self.idle()
+
         return not timed_out
 
     def send_with_ack(self, data):
@@ -705,6 +712,7 @@ class RFM69:
             # set retry flag in packet header
             self.flags |= _RH_FLAGS_RETRY
         self.flags = 0  # clear flags
+
         return got_ack
 
     # pylint: disable=too-many-branches
