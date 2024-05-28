@@ -2,7 +2,8 @@ from rfm69 import RFM69
 from machine import SPI, Pin
 
 CS = Pin(5, Pin.OUT)
-reset = Pin(22, Pin.OUT)
+#reset = Pin(22, Pin.OUT)
+reset = None
 spi = SPI(1, baudrate=5000000, polarity=0, phase=0, bits=8, firstbit=0, sck=Pin(18), mosi=Pin(23), miso=Pin(19))
 rfm69 = RFM69(spi, CS, reset, frequency=868.0)
 
