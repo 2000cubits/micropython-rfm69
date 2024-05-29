@@ -25,6 +25,7 @@
 from micropython import const
 import time
 import random
+from machine import Pin
 
 
 # Internal constants:
@@ -103,10 +104,16 @@ class RFM69:
             self._offset = offset
 
         def __get__(self, obj, objtype):
+            """
+            :type obj: RFM69
+            """
             reg_value = obj._read_u8(self._address)
             return (reg_value & self._mask) >> self._offset
 
         def __set__(self, obj, val):
+            """
+            :type obj: RFM69
+            """
             reg_value = obj._read_u8(self._address)
             reg_value &= ~self._mask
             reg_value |= (val & 0xFF) << self._offset
@@ -146,8 +153,8 @@ class RFM69:
     def __init__(
             self,
             spi,
-            cs,
-            reset,
+            cs: Pin,
+            reset: Pin,
             frequency,
             *,
             sync_word=b"\x2D\xD4",
@@ -156,19 +163,25 @@ class RFM69:
             high_power=None,
     ):
         self._spi = spi
+
         self._tx_power = DEFAULT_TX_POWER
         if high_power is None:
             high_power = DEFAULT_HIGH_POWER
+
         self.high_power = high_power
-        self.cs = cs
+        self._cs = cs
+
         self._reset = reset
+        if self._reset is not None:
+            self._reset.init(mode=Pin.OUT, value=0)
+
         self.reset()  # Reset the chip.
+
         # Check the version of the chip.
         version = self._read_u8(_REG_VERSION)
         if version != 0x24:
-            raise RuntimeError(
-                "Failed to find RFM69 with expected version, check wiring!"
-            )
+            raise RuntimeError("Failed to find RFM69 with expected version, check wiring!")
+
         self.idle()  # Enter idle state
         # Set up the chip in a similar way to the RadioHead RFM69 library
         # Set FIFO TX condition to not empty and the default FIFO threshold to 15
@@ -205,7 +218,7 @@ class RFM69:
         self.ack_retries = 5
         """The number of ACK retries before reporting a failure."""
         self.ack_delay = None
-        """The delay time before attemting to send an ACK.
+        """The delay time before attempting to send an ACK.
            If ACKs are being missed try setting this to .1 or .2.
         """
         # initialize sequence number counter for reliabe datagram mode
@@ -265,65 +278,70 @@ class RFM69:
     # read_into(_REG_FIFO, packet)
     def _read_into(self, address, buf):
         # Read from the specified address into the provided buffer
-        self.cs.value(0)
+        self._cs.value(0)
         self._spi.write(bytes([address & 0x7F]))
         self._spi.readinto(buf)
-        self.cs.value(1)
+        self._cs.value(1)
 
         return buf
 
     def _read_u8(self, address):
         # Read a single byte from the provided address and return it.
-        self.cs.value(0)
+        self._cs.value(0)
         self._spi.write(bytes([address & 0x7F]))
         value = self._spi.read(1)
-        self.cs.value(1)
+        self._cs.value(1)
 
         return value[0]
 
     def _write_from(self, address, buf):
         # Write to the provided address and taken from the provided buffer
-        self.cs.value(0)
+        self._cs.value(0)
         self._spi.write(bytes([(address | 0x80) & 0xFF]))
         self._spi.write(buf)
-        self.cs.value(1)
+        self._cs.value(1)
 
     def _write_fifo_from(self, buf):
         # Write to the transmit FIFO and taken from the provided buffer
         length = len(buf)
-        buf1 = (_REG_FIFO | 0x80) & 0xFF  # Set top bit to 1 to
-        # indicate a write
+        buf1 = (_REG_FIFO | 0x80) & 0xFF  # Set top bit to 1 to indicate a write
         buf2 = length & 0xFF  # Set packet length
-        self.cs.value(0)
+
+        self._cs.value(0)
         self._spi.write(bytes([buf1, buf2]))  # send address and length
         self._spi.write(buf)
-        self.cs.value(1)
+        self._cs.value(1)
 
     def _write_u8(self, address, val):
+        if __debug__:
+            print("write_u8", address, val)
+
         # Write a byte register to the chip.  Specify the 7-bit address and the
         # 8-bit value to write to that address.
-        address = (address | 0x80) & 0xFF  # Set top bit to 1 to
-        # indicate a write.
+        address = (address | 0x80) & 0xFF  # Set top bit to 1 to indicate a write
         val = val & 0xFF
-        self.cs.value(0)
+        self._cs.value(0)
         self._spi.write(bytes([address, val]))
-        self.cs.value(1)
+        self._cs.value(1)
 
     def reset(self):
         """Perform a reset of the chip."""
         if self._reset is not None:
             # See section 7.2.2 of the datasheet for reset description.
-            self._reset.value(1)
-            time.sleep_us(100)  # 100 us
-            self._reset.value(0)
-            time.sleep_us(5000)  # 5 ms
+            self._reset.value(1)  # Set Reset High
+            time.sleep(0.0001)  # 100 us
+            self._reset.value(0)  # set Reset Low
+            time.sleep(0.005)  # 5 ms
 
     def idle(self):
         """Enter idle standby mode (switching off high power amplifiers if necessary)."""
         # Like RadioHead library, turn off high power boost if enabled.
         if self._tx_power >= 18:
+            if __debug__:
+                print("turning off high power")
             self._write_u8(_REG_TEST_PA1, _TEST_PA1_NORMAL)
             self._write_u8(_REG_TEST_PA2, _TEST_PA2_NORMAL)
+
         self.operation_mode = STANDBY_MODE
 
     def sleep(self):
@@ -377,7 +395,7 @@ class RFM69:
     @property
     def operation_mode(self):
         """The operation mode value.  Unless you're manually controlling the chip you shouldn't
-           change the operation_mode with this property as other side-effects are required for
+           change the operation_mode with this property as other side effects are required for
            changing logical modes--use :py:func:`idle`, :py:func:`sleep`, :py:func:`transmit`,
            :py:func:`listen` instead to signal intent for explicit logical modes.
         """
@@ -387,12 +405,15 @@ class RFM69:
     @operation_mode.setter
     def operation_mode(self, val):
         assert 0 <= val <= 4
-        # Set the mode bits inside the operation mode register.
+        # Set the mode bits inside the operation mode register
         op_mode = self._read_u8(_REG_OP_MODE)
+
         op_mode &= 0b11100011
         op_mode |= val << 2
+
         self._write_u8(_REG_OP_MODE, op_mode)
-        # Wait for mode to change by polling interrupt bit.
+
+        # Wait for mode to change by polling interrupt bit
         while not self.mode_ready:
             pass
 
