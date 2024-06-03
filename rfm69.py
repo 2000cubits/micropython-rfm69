@@ -19,13 +19,17 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
+import asyncio
+# Based on work of nohcpy (https://github.com/nohcpy)
+# who ported the original Adafruit lib to micropython
 
-# Based on work of nohcpy (https://github.com/nohcpy) who ported the original Adafruit lib to micropython
+# pylint: disable=import-error,missing-module-docstring
 
-from micropython import const
+from asyncio import Event
 import time
 import random
 from machine import Pin
+from micropython import const
 
 
 # Internal constants:
@@ -89,6 +93,7 @@ DEFAULT_TX_POWER = const(13)
 DEFAULT_HIGH_POWER = const(False)
 
 
+# pylint: disable=too-many-instance-attributes,missing-class-docstring,too-many-arguments
 class RFM69:
     class _RegisterBits:
         def __init__(self, address, *, offset=0, bits=1):
@@ -155,6 +160,7 @@ class RFM69:
             spi,
             cs: Pin,
             reset: Pin,
+            interrupt: Pin,
             frequency,
             *,
             sync_word=b"\x2D\xD4",
@@ -163,17 +169,21 @@ class RFM69:
             high_power=None,
     ):
         self._spi = spi
-
         self._tx_power = DEFAULT_TX_POWER
+        self._packet_ready_event = asyncio.ThreadSafeFlag()
+
         if high_power is None:
             high_power = DEFAULT_HIGH_POWER
-
         self.high_power = high_power
+
         self._cs = cs
 
+        if reset is not None:
+            reset.init(mode=Pin.OUT, value=0)
+
         self._reset = reset
-        if self._reset is not None:
-            self._reset.init(mode=Pin.OUT, value=0)
+        self._interrupt = interrupt
+        self._interrupt_init()
 
         self.reset()  # Reset the chip.
 
@@ -420,7 +430,7 @@ class RFM69:
            is 0x2D, 0xD4 which matches the RadioHead RFM69 library. Setting a value of None will
            disable synchronization word matching entirely.
         """
-        # Handle when sync word is disabled..
+        # Handle when sync word is disabled.
         if not self.sync_on:
             return None
         # Sync word is not disabled so read the current value.
@@ -639,7 +649,7 @@ class RFM69:
            This appends a 4 byte header to be compatible with the RadioHead library.
            The header defaults to using the initialized attributes:
            (destination,node,identifier,flags)
-           It may be temporarily overidden via the kwargs - destination,node,identifier,flags.
+           It may be temporarily overridden via the kwargs - destination,node,identifier,flags.
            Values passed via kwargs do not alter the attribute settings.
            The keep_listening argument should be set to True if you want to start listening
            automatically after the packet is sent. The default setting is False.
@@ -780,10 +790,12 @@ class RFM69:
             if fifo_length < 5:
                 packet = None
             else:
-                if self.node != _RH_BROADCAST_ADDRESS and packet[0] != _RH_BROADCAST_ADDRESS and packet[0] != self.node:
+                if (self.node != _RH_BROADCAST_ADDRESS and
+                        packet[0] != _RH_BROADCAST_ADDRESS and packet[0] != self.node):
                     packet = None
                 # send ACK unless this was an ACK or a broadcast
-                elif with_ack and ((packet[3] & _RH_FLAGS_ACK) == 0) and (packet[0] != _RH_BROADCAST_ADDRESS):
+                elif (with_ack and ((packet[3] & _RH_FLAGS_ACK) == 0) and
+                      (packet[0] != _RH_BROADCAST_ADDRESS)):
                     # delay before sending Ack to give receiver a chance to get ready
                     if self.ack_delay is not None:
                         time.sleep_ms(self.ack_delay)
@@ -810,3 +822,12 @@ class RFM69:
             # Enter idle mode to stop receiving other packets.
             self.idle()
         return packet
+
+    def _interrupt_init(self):
+        self._interrupt.irq(handler=None)
+        self._interrupt.irq(
+            handler=self._interrupt_handler, trigger=Pin.IRQ_RISING,
+        )
+
+    def _interrupt_handler(self):
+        self._packet_ready_event.set()

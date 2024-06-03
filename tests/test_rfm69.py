@@ -13,7 +13,9 @@ spi = SPI(1, baudrate=50_000,
           bits=8,
           sck=Pin(10), mosi=Pin(11), miso=Pin(8))
 
-rfm69 = RFM69(spi, CS, reset, frequency=868)
+interrupt = Pin(14)
+
+rfm69 = RFM69(spi, cs=CS, reset=reset, interrupt=interrupt, frequency=868)
 
 # Optionally set an encryption key (16 byte AES key). MUST match both
 # on the transmitter and receiver (or be set to None to disable/the default).
