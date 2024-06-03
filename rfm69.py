@@ -83,6 +83,9 @@ _RH_BROADCAST_ADDRESS = const(0xFF)
 _RH_FLAGS_ACK = const(0x80)
 _RH_FLAGS_RETRY = const(0x40)
 
+# upper RX signal sensitivity threshold in dBm for carrier sense access
+_CSMA_LIMIT = const(-90)
+
 # User facing constants:
 SLEEP_MODE = const(0b000)
 STANDBY_MODE = const(0b001)
@@ -259,6 +262,23 @@ class RFM69:
            Lower 4 bits may be used to pass information.
            Fourth byte of the RadioHead header.
         """
+
+    def _can_send(self) -> bool:
+        # if signal stronger than -100dBm is detected assume channel activity
+        # https://github.com/sparkfun/RFM69HCW_Breakout/blob/master/Libraries/Arduino/RFM69/RFM69.cpp
+        if self.operation_mode == RX_MODE and self.rssi < _CSMA_LIMIT:
+            self.operation_mode = STANDBY_MODE
+            return True
+
+        return False
+# {
+#   if (_mode == RF69_MODE_RX && PAYLOADLEN == 0 && readRSSI() < CSMA_LIMIT)
+#   {
+#     setMode(RF69_MODE_STANDBY);
+#     return true;
+#   }
+#   return false;
+# }
 
     def _configure_radio(self):
         # Configure modulation for RadioHead library GFSK_Rb250Fd250 mode by default.
@@ -830,4 +850,6 @@ class RFM69:
         )
 
     def _interrupt_handler(self):
+        # https://github.com/sparkfun/RFM69HCW_Breakout/blob/master/Libraries/Arduino/RFM69/RFM69.cpp
+        # FIXME: implement from
         self._packet_ready_event.set()
