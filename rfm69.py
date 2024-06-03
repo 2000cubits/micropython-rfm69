@@ -313,9 +313,6 @@ class RFM69:
         self._cs.value(1)
 
     def _write_u8(self, address, val):
-        if __debug__:
-            print("write_u8", address, val)
-
         # Write a byte register to the chip.  Specify the 7-bit address and the
         # 8-bit value to write to that address.
         address = (address | 0x80) & 0xFF  # Set top bit to 1 to indicate a write
@@ -337,8 +334,6 @@ class RFM69:
         """Enter idle standby mode (switching off high power amplifiers if necessary)."""
         # Like RadioHead library, turn off high power boost if enabled.
         if self._tx_power >= 18:
-            if __debug__:
-                print("turning off high power")
             self._write_u8(_REG_TEST_PA1, _TEST_PA1_NORMAL)
             self._write_u8(_REG_TEST_PA2, _TEST_PA2_NORMAL)
 
