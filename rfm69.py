@@ -28,9 +28,8 @@ import asyncio
 from asyncio import Event
 import time
 import random
-from machine import Pin
+from machine import Pin, SPI
 from micropython import const
-
 
 # Internal constants:
 _REG_FIFO = const(0x00)
@@ -86,6 +85,8 @@ _RH_FLAGS_RETRY = const(0x40)
 # upper RX signal sensitivity threshold in dBm for carrier sense access
 _CSMA_LIMIT = const(-90)
 
+_SPI_INIT_ARGS = {"baudrate": 50_000, "polarity": 0, "phase": 0, "firstbit": SPI.MSB}
+
 # User facing constants:
 SLEEP_MODE = const(0b000)
 STANDBY_MODE = const(0b001)
@@ -111,7 +112,7 @@ class RFM69:
             self._mask <<= offset
             self._offset = offset
 
-        def __get__(self, obj, objtype):
+        def __get__(self, obj, obj_type):
             """
             :type obj: RFM69
             """
@@ -271,14 +272,6 @@ class RFM69:
             return True
 
         return False
-# {
-#   if (_mode == RF69_MODE_RX && PAYLOADLEN == 0 && readRSSI() < CSMA_LIMIT)
-#   {
-#     setMode(RF69_MODE_STANDBY);
-#     return true;
-#   }
-#   return false;
-# }
 
     def _configure_radio(self):
         # Configure modulation for RadioHead library GFSK_Rb250Fd250 mode by default.
@@ -308,6 +301,7 @@ class RFM69:
     # read_into(_REG_FIFO, packet)
     def _read_into(self, address, buf):
         # Read from the specified address into the provided buffer
+        self._spi.init(**_SPI_INIT_ARGS)
         self._cs.value(0)
         self._spi.write(bytes([address & 0x7F]))
         self._spi.readinto(buf)
@@ -317,6 +311,7 @@ class RFM69:
 
     def _read_u8(self, address):
         # Read a single byte from the provided address and return it.
+        self._spi.init(**_SPI_INIT_ARGS)
         self._cs.value(0)
         self._spi.write(bytes([address & 0x7F]))
         value = self._spi.read(1)
@@ -326,6 +321,7 @@ class RFM69:
 
     def _write_from(self, address, buf):
         # Write to the provided address and taken from the provided buffer
+        self._spi.init(**_SPI_INIT_ARGS)
         self._cs.value(0)
         self._spi.write(bytes([(address | 0x80) & 0xFF]))
         self._spi.write(buf)
@@ -337,6 +333,7 @@ class RFM69:
         buf1 = (_REG_FIFO | 0x80) & 0xFF  # Set top bit to 1 to indicate a write
         buf2 = length & 0xFF  # Set packet length
 
+        self._spi.init(**_SPI_INIT_ARGS)
         self._cs.value(0)
         self._spi.write(bytes([buf1, buf2]))  # send address and length
         self._spi.write(buf)
@@ -347,6 +344,7 @@ class RFM69:
         # 8-bit value to write to that address.
         address = (address | 0x80) & 0xFF  # Set top bit to 1 to indicate a write
         val = val & 0xFF
+        self._spi.init(**_SPI_INIT_ARGS)
         self._cs.value(0)
         self._spi.write(bytes([address, val]))
         self._cs.value(1)
