@@ -86,6 +86,7 @@ _RH_FLAGS_RETRY = const(0x40)
 _CSMA_LIMIT = const(-90)
 
 _SPI_INIT_ARGS = {"baudrate": 50_000, "polarity": 0, "phase": 0, "firstbit": SPI.MSB}
+_MAX_DATA_LENGTH = const(60)
 
 # User facing constants:
 SLEEP_MODE = const(0b000)
@@ -95,6 +96,39 @@ TX_MODE = const(0b011)
 RX_MODE = const(0b100)
 DEFAULT_TX_POWER = const(13)
 DEFAULT_HIGH_POWER = const(False)
+
+
+class IncomingPacket:
+
+    def __init__(self, id, receiver, sender, rssi, data, flags):
+        """Object to represent received packet.
+
+        Args:
+            id: (int) A message ID, distinct (over short time scales) for each message sent by a particular node
+            receiver (int): Node ID of receiver
+            sender (int): Node ID of sender
+            rssi (int): Received Signal Strength Indicator i.e. the power present in a received radio signal
+            data (bytes): Raw transmitted data
+            flags (int): A bitmask of flags. The most significant 4 bits are reserved for use by RadioHead. The least significant 4 bits are reserved for applications.
+        """
+        self.id = id
+        self.received = time.localtime()
+        self.receiver = receiver
+        self.sender = sender
+        self.rssi = rssi
+        self.data = data
+        self.flags = flags
+
+
+class OutgoingPacket:
+
+    def __init__(self, data, destination, ack=False, flags=None):
+        if len(data) > _MAX_DATA_LENGTH:
+            raise RuntimeError("The length of the data must be max 60 bytes %d was given" % len(data))
+        self.dest = destination
+        self.flags = flags
+        self.ack = ack
+        self.data = data
 
 
 # pylint: disable=too-many-instance-attributes,missing-class-docstring,too-many-arguments
@@ -191,6 +225,10 @@ class RFM69:
 
         self.reset()  # Reset the chip.
 
+        # packet buffer
+        self._packet_buffer = bytearray(_MAX_DATA_LENGTH)
+        self._packet_buffer_memview = memoryview(self._packet_buffer)
+
         # Check the version of the chip.
         version = self._read_u8(_REG_VERSION)
         if version != 0x24:
@@ -235,7 +273,7 @@ class RFM69:
         """The delay time before attempting to send an ACK.
            If ACKs are being missed try setting this to .1 or .2.
         """
-        # initialize sequence number counter for reliabe datagram mode
+        # initialize sequence number counter for reliable datagram mode
         self.sequence_number = 0
         # create seen Ids list
         self.seen_ids = bytearray(256)
@@ -258,7 +296,7 @@ class RFM69:
            Third byte of the RadioHead header.
         """
         # flags - identifies ack/retry packet for reliable datagram mode
-        self.flags = 0
+        self._flags = 0
         """Upper 4 bits reserved for use by Reliable Datagram Mode.
            Lower 4 bits may be used to pass information.
            Fourth byte of the RadioHead header.
@@ -383,6 +421,7 @@ class RFM69:
         self.dio_0_mapping = 0b01
         # Enter RX mode (will clear FIFO!).
         self.operation_mode = RX_MODE
+        self._packet_ready_event.clear()
 
     def transmit(self):
         """Transmit a packet which is queued in the FIFO.  This is a low level function for
@@ -651,7 +690,7 @@ class RFM69:
         self._write_u8(_REG_FDEV_MSB, fdev >> 8)
         self._write_u8(_REG_FDEV_LSB, fdev & 0xFF)
 
-    def send(
+    async def send(
             self,
             data,
             *,
@@ -680,6 +719,11 @@ class RFM69:
         # buffer be within an expected range of bounds.  Disable this check.
         # pylint: disable=len-as-condition
         assert 0 < len(data) <= 60
+
+        # fixme: should be handled by a timeout?
+        while not self._can_send():
+            await asyncio.sleep(0)
+
         # pylint: enable=len-as-condition
         self.idle()  # Stop receiving to clear FIFO and keep it clear.
         # Fill the FIFO with a packet to send.
@@ -698,7 +742,7 @@ class RFM69:
         else:  # use kwarg
             payload[2] = identifier
         if flags is None:  # use attribute
-            payload[3] = self.flags
+            payload[3] = self._flags
         else:  # use kwarg
             payload[3] = flags
         payload = payload + data
@@ -706,22 +750,30 @@ class RFM69:
         self._write_fifo_from(payload)
         # Turn on transmit mode to send out the packet
         self.transmit()
-        # Wait for packet sent interrupt with explicit polling
-        # (not ideal but best that can be done right now without interrupts)
-        start = time.ticks_ms()
+
         timed_out = False
-        while not timed_out and not self.packet_sent:
-            if time.ticks_diff(time.ticks_ms(), start) >= self.xmit_timeout:
-                timed_out = True
+        try:
+            await asyncio.wait_for(self._packet_sent(), self.xmit_timeout)
+        except TimeoutError:
+            timed_out = True
+
         # Listen again if requested.
         if keep_listening:
             self.listen()
-        else:  # Enter idle mode to stop receiving other packets.
+        # Enter idle mode to stop receiving other packets.
+        else:
             self.idle()
 
         return not timed_out
 
-    def send_with_ack(self, data):
+    async def _packet_sent(self):
+        while not self.packet_sent:
+            await asyncio.sleep(0)
+
+    async def broadcast(self, data, flags=None):
+        await self.send(data, flags=flags, destination=_RH_BROADCAST_ADDRESS)
+
+    async def send_with_ack(self, data, flags=None):
         """Reliable Datagram mode:
            Send a packet with data and wait for an ACK response.
            The packet header is automatically generated.
@@ -735,33 +787,34 @@ class RFM69:
         self.sequence_number = (self.sequence_number + 1) & 0xFF
         while not got_ack and retries_remaining:
             self.identifier = self.sequence_number
-            self.send(data, keep_listening=True)
+            await self.send(data, flags=flags, keep_listening=True)
             # Don't look for ACK from Broadcast message
             if self.destination == _RH_BROADCAST_ADDRESS:
                 got_ack = True
             else:
                 # wait for a packet from our destination
-                ack_packet = self.receive(timeout=self.ack_wait, with_header=True)
+                ack_packet = await self.receive(timeout=self.ack_wait)
                 if ack_packet is not None:
-                    if ack_packet[3] & _RH_FLAGS_ACK:
+                    if ack_packet.flags & _RH_FLAGS_ACK:
                         # check the ID
-                        if ack_packet[2] == self.identifier:
+                        if ack_packet.id == self.identifier:
                             got_ack = True
                             break
             # pause before next retry -- random delay
             if not got_ack:
                 # delay by random amount before next try
-                time.sleep_ms(self.ack_wait + int(self.ack_wait * random.random()))
+                await asyncio.sleep_ms((self.ack_wait + int(self.ack_wait * random.random())))
             retries_remaining = retries_remaining - 1
             # set retry flag in packet header
-            self.flags |= _RH_FLAGS_RETRY
-        self.flags = 0  # clear flags
+            self._flags |= _RH_FLAGS_RETRY
+
+        self._flags = 0  # clear flags
 
         return got_ack
 
     # pylint: disable=too-many-branches
-    def receive(
-            self, *, keep_listening=True, with_ack=False, timeout=None, with_header=False
+    async def receive(
+            self, *, keep_listening=True, with_ack=False, timeout=None
     ):
         """Wait to receive a packet from the receiver. If a packet is found the payload bytes
            are returned, otherwise None is returned (which indicates the timeout elapsed with no
@@ -779,20 +832,17 @@ class RFM69:
         timed_out = False
         if timeout is None:
             timeout = self.receive_timeout
-        if timeout is not None:
-            # Wait for the payload_ready signal.  This is not ideal and will
-            # surely miss or overflow the FIFO when packets aren't read fast
-            # enough, however it's the best that can be done from Python without
-            # interrupt supports.
-            # Make sure we are listening for packets.
-            self.listen()
-            start = time.ticks_ms()
-            timed_out = False
-            while not timed_out and not self.payload_ready:
-                if time.ticks_diff(time.ticks_ms(), start) >= timeout:
-                    timed_out = True
+
+        self.listen()
+
+        try:
+            await asyncio.wait_for(self._packet_ready_event, timeout)
+        except TimeoutError:
+            timed_out = True
+
         # Payload ready is set, a packet is in the FIFO.
         packet = None
+        header = None
         # save last RSSI reading
         self.last_rssi = self.rssi
         # Enter idle mode to stop receiving other packets.
@@ -803,42 +853,43 @@ class RFM69:
             # Handle if the received packet is too small to include the 4 byte
             # RadioHead header and at least one byte of data --reject this packet and ignore it.
             if fifo_length > 0:  # read and clear the FIFO if anything in it
-                packet = bytearray(fifo_length)
-                self._read_into(_REG_FIFO, packet)
+                self._read_into(_REG_FIFO, self._packet_buffer)
             if fifo_length < 5:
                 packet = None
             else:
-                if (self.node != _RH_BROADCAST_ADDRESS and
-                        packet[0] != _RH_BROADCAST_ADDRESS and packet[0] != self.node):
+                # copy out packet
+                packet = self._packet_buffer_memview[4:fifo_length]
+                header = self._packet_buffer_memview[0:4]
+                if self.node != _RH_BROADCAST_ADDRESS and header[0] != _RH_BROADCAST_ADDRESS and header[0] != self.node:
                     packet = None
                 # send ACK unless this was an ACK or a broadcast
-                elif (with_ack and ((packet[3] & _RH_FLAGS_ACK) == 0) and
-                      (packet[0] != _RH_BROADCAST_ADDRESS)):
+                elif with_ack and ((header[3] & _RH_FLAGS_ACK) == 0) and (header[0] != _RH_BROADCAST_ADDRESS):
                     # delay before sending Ack to give receiver a chance to get ready
                     if self.ack_delay is not None:
-                        time.sleep_ms(self.ack_delay)
+                        await asyncio.sleep_ms(self.ack_delay)
                     # send ACK packet to sender
-                    data = bytes("!", "UTF-8")
-                    self.send(
-                        data,
-                        destination=packet[1],
-                        node=packet[0],
-                        identifier=packet[2],
-                        flags=(packet[3] | _RH_FLAGS_ACK),
+                    await self.send(
+                        bytes("!", "UTF-8"),
+                        destination=header[1],
+                        node=header[0],
+                        identifier=header[2],
+                        flags=(header[3] | _RH_FLAGS_ACK)
                     )
-                    # reject Retries if we have seen this idetifier from this source before
-                    if self.seen_ids[packet[1]] == packet[2] and packet[3] & _RH_FLAGS_RETRY:
+                    # reject retries if we have seen this identifier from this source before
+                    if self.seen_ids[header[1]] == header[2] and header[3] & _RH_FLAGS_RETRY:
                         packet = None
                     else:  # save the packet identifier for this source
-                        self.seen_ids[packet[1]] = packet[2]
-                if not with_header and packet is not None:  # skip the header if not wanted
-                    packet = packet[4:]
+                        self.seen_ids[header[1]] = header[2]
         # Listen again if necessary and return the result packet.
         if keep_listening:
             self.listen()
         else:
             # Enter idle mode to stop receiving other packets.
             self.idle()
+
+        if packet is not None:
+            return IncomingPacket(header[2], header[0], header[1], self.last_rssi, bytes(packet), header[3])
+
         return packet
 
     def _interrupt_init(self):
