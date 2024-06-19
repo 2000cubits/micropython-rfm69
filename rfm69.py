@@ -31,6 +31,17 @@ import random
 from machine import Pin, SPI
 from micropython import const
 
+try:
+    from growcube.log import debug
+except ImportError:
+    debug = lambda x, fields: print(x, fields)
+
+
+# Exceptions:
+class ChannelBusyException(RuntimeError):
+    pass
+
+
 # Internal constants:
 _REG_FIFO = const(0x00)
 _REG_OP_MODE = const(0x01)
@@ -82,8 +93,8 @@ _RH_BROADCAST_ADDRESS = const(0xFF)
 _RH_FLAGS_ACK = const(0x80)
 _RH_FLAGS_RETRY = const(0x40)
 
-# upper RX signal sensitivity threshold in dBm for carrier sense access
-_CSMA_LIMIT = const(-90)
+# default upper RX signal sensitivity threshold in dBm for carrier sense access
+_DEFAULT_RSSI_THRESHOLD = const(-90)
 
 _SPI_INIT_ARGS = {"baudrate": 50_000, "polarity": 0, "phase": 0, "firstbit": SPI.MSB}
 _MAX_DATA_LENGTH = const(60)
@@ -204,30 +215,26 @@ class RFM69:
             sync_word=b"\x2D\xD4",
             preamble_length=4,
             encryption_key=None,
+            rssi_threshold=None,
             high_power=None,
     ):
         self._spi = spi
+        self._cs = cs
+        self._interrupt = interrupt
+        self._reset = reset
         self._tx_power = DEFAULT_TX_POWER
-        self._packet_ready_event = asyncio.ThreadSafeFlag()
-
         if high_power is None:
             high_power = DEFAULT_HIGH_POWER
         self.high_power = high_power
 
-        self._cs = cs
+        self._packet_ready_event = asyncio.ThreadSafeFlag()
+        self._reset.init(mode=Pin.OUT, value=0)
 
-        if reset is not None:
-            reset.init(mode=Pin.OUT, value=0)
-
-        self._reset = reset
-        self._interrupt = interrupt
         self._interrupt_init()
-
-        self.reset()  # Reset the chip.
-
-        # packet buffer
         self._packet_buffer = bytearray(_MAX_DATA_LENGTH)
         self._packet_buffer_memview = memoryview(self._packet_buffer)
+
+        self.reset()
 
         # Check the version of the chip.
         version = self._read_u8(_REG_VERSION)
@@ -248,6 +255,12 @@ class RFM69:
         self.preamble_length = preamble_length  # Set the preamble length
         self.frequency_mhz = frequency  # Set frequency.
         self.encryption_key = encryption_key  # Set encryption key.
+
+        if rssi_threshold is None:
+            rssi_threshold = _DEFAULT_RSSI_THRESHOLD
+        self.rssi_threshold = rssi_threshold  # Listen before talk rssi threshold
+        self.listen_before_talk_timeout = 100
+
         # set radio configuration parameters
         self._configure_radio()
         # initialize last RSSI reading
@@ -302,99 +315,13 @@ class RFM69:
            Fourth byte of the RadioHead header.
         """
 
-    def _can_send(self) -> bool:
-        # if signal stronger than -100dBm is detected assume channel activity
-        # https://github.com/sparkfun/RFM69HCW_Breakout/blob/master/Libraries/Arduino/RFM69/RFM69.cpp
-        if self.operation_mode == RX_MODE and self.rssi < _CSMA_LIMIT:
-            self.operation_mode = STANDBY_MODE
-            return True
-
-        return False
-
-    def _configure_radio(self):
-        # Configure modulation for RadioHead library GFSK_Rb250Fd250 mode by default.
-        # Users with advanced knowledge can manually reconfigure for any other mode
-        # (consulting the datasheet is absolutely necessary!)
-        self.data_mode = 0b00  # Packet mode
-        self.modulation_type = 0b00  # FSK modulation
-        self.modulation_shaping = 0b01  # Gaussian filter, BT=1.0
-        self.bitrate = 250000  # 250kbs
-        self.frequency_deviation = 250000  # 250khz
-        self.rx_bw_dcc_freq = 0b111  # RxBw register = 0xE0
-        self.rx_bw_mantissa = 0b00
-        self.rx_bw_exponent = 0b000
-        self.afc_bw_dcc_freq = 0b111  # AfcBw register = 0xE0
-        self.afc_bw_mantissa = 0b00
-        self.afc_bw_exponent = 0b000
-        self.packet_format = 1  # Variable length
-        self.dc_free = 0b10  # Whitening
-        self.crc_on = 1  # CRC enabled
-        self.crc_auto_clear = 0  # Clear FIFO on CRC fail
-        self.address_filtering = 0b00  # No address filtering
-        # Set transmit power to 13 dBm, a safe value any module supports
-        self.tx_power = 13
-
-    # pylint: disable=no-member
-    # Reconsider this disable when it can be tested.
-    # read_into(_REG_FIFO, packet)
-    def _read_into(self, address, buf):
-        # Read from the specified address into the provided buffer
-        self._spi.init(**_SPI_INIT_ARGS)
-        self._cs.value(0)
-        self._spi.write(bytes([address & 0x7F]))
-        self._spi.readinto(buf)
-        self._cs.value(1)
-
-        return buf
-
-    def _read_u8(self, address):
-        # Read a single byte from the provided address and return it.
-        self._spi.init(**_SPI_INIT_ARGS)
-        self._cs.value(0)
-        self._spi.write(bytes([address & 0x7F]))
-        value = self._spi.read(1)
-        self._cs.value(1)
-
-        return value[0]
-
-    def _write_from(self, address, buf):
-        # Write to the provided address and taken from the provided buffer
-        self._spi.init(**_SPI_INIT_ARGS)
-        self._cs.value(0)
-        self._spi.write(bytes([(address | 0x80) & 0xFF]))
-        self._spi.write(buf)
-        self._cs.value(1)
-
-    def _write_fifo_from(self, buf):
-        # Write to the transmit FIFO and taken from the provided buffer
-        length = len(buf)
-        buf1 = (_REG_FIFO | 0x80) & 0xFF  # Set top bit to 1 to indicate a write
-        buf2 = length & 0xFF  # Set packet length
-
-        self._spi.init(**_SPI_INIT_ARGS)
-        self._cs.value(0)
-        self._spi.write(bytes([buf1, buf2]))  # send address and length
-        self._spi.write(buf)
-        self._cs.value(1)
-
-    def _write_u8(self, address, val):
-        # Write a byte register to the chip.  Specify the 7-bit address and the
-        # 8-bit value to write to that address.
-        address = (address | 0x80) & 0xFF  # Set top bit to 1 to indicate a write
-        val = val & 0xFF
-        self._spi.init(**_SPI_INIT_ARGS)
-        self._cs.value(0)
-        self._spi.write(bytes([address, val]))
-        self._cs.value(1)
-
     def reset(self):
         """Perform a reset of the chip."""
-        if self._reset is not None:
-            # See section 7.2.2 of the datasheet for reset description.
-            self._reset.value(1)  # Set Reset High
-            time.sleep(0.0001)  # 100 us
-            self._reset.value(0)  # set Reset Low
-            time.sleep(0.005)  # 5 ms
+        # See section 7.2.2 of the datasheet for reset description.
+        self._reset.value(1)  # Set Reset High
+        time.sleep(0.0001)  # 100 us
+        self._reset.value(0)  # set Reset Low
+        time.sleep(0.005)  # 5 ms
 
     def idle(self):
         """Enter idle standby mode (switching off high power amplifiers if necessary)."""
@@ -422,6 +349,7 @@ class RFM69:
         # Enter RX mode (will clear FIFO!).
         self.operation_mode = RX_MODE
         self._packet_ready_event.clear()
+        self._interrupt_init()
 
     def transmit(self):
         """Transmit a packet which is queued in the FIFO.  This is a low level function for
@@ -436,6 +364,7 @@ class RFM69:
         self.dio_0_mapping = 0b00
         # Enter TX mode (will clear FIFO!).
         self.operation_mode = TX_MODE
+        self._interrupt_reset()
 
     @property
     def temperature(self):
@@ -712,6 +641,7 @@ class RFM69:
            automatically after the packet is sent. The default setting is False.
 
            Returns: True if success or False if the send timed out.
+           :raises: ChannelBusyException
         """
         # Disable pylint warning to not use length as a check for zero.
         # This is a puzzling warning as the below code is clearly the most
@@ -720,9 +650,10 @@ class RFM69:
         # pylint: disable=len-as-condition
         assert 0 < len(data) <= 60
 
-        # fixme: should be handled by a timeout?
-        while not self._can_send():
-            await asyncio.sleep(0)
+        try:
+            await asyncio.wait_for_ms(self._listen_before_talk(), self.listen_before_talk_timeout)
+        except asyncio.TimeoutError:
+            raise ChannelBusyException("The RF channel is busy")
 
         # pylint: enable=len-as-condition
         self.idle()  # Stop receiving to clear FIFO and keep it clear.
@@ -753,8 +684,8 @@ class RFM69:
 
         timed_out = False
         try:
-            await asyncio.wait_for(self._packet_sent(), self.xmit_timeout)
-        except TimeoutError:
+            await asyncio.wait_for_ms(self._packet_sent(), self.xmit_timeout)
+        except asyncio.TimeoutError:
             timed_out = True
 
         # Listen again if requested.
@@ -836,9 +767,9 @@ class RFM69:
         self.listen()
 
         try:
-            await asyncio.wait_for(self._packet_ready_event, timeout)
+            await asyncio.wait_for_ms(self._packet_ready_event, timeout)
         except TimeoutError:
-            timed_out = True
+            raise
 
         # Payload ready is set, a packet is in the FIFO.
         packet = None
@@ -898,7 +829,104 @@ class RFM69:
             handler=self._interrupt_handler, trigger=Pin.IRQ_RISING,
         )
 
+    def _interrupt_reset(self):
+        self._interrupt.irq(handler=None)
+
     def _interrupt_handler(self):
+        # this should only be called when receiving
+        # turn HIGH signalling transmission finish
         # https://github.com/sparkfun/RFM69HCW_Breakout/blob/master/Libraries/Arduino/RFM69/RFM69.cpp
         # FIXME: implement from
         self._packet_ready_event.set()
+
+    def _can_send(self) -> bool:
+        # if signal stronger than the given threshold is detected assume channel activity
+        if self.operation_mode == RX_MODE and self.rssi < self.rssi_threshold:
+            self.idle()
+
+            return True
+
+        return False
+
+    async def _listen_before_talk(self):
+        # Listen before talk
+        self.listen()
+
+        while not self._can_send():
+            await asyncio.sleep(0)
+
+    def _configure_radio(self):
+        # Configure modulation for RadioHead library GFSK_Rb250Fd250 mode by default.
+        # Users with advanced knowledge can manually reconfigure for any other mode
+        # (consulting the datasheet is absolutely necessary!)
+        self.data_mode = 0b00  # Packet mode
+        self.modulation_type = 0b00  # FSK modulation
+        self.modulation_shaping = 0b01  # Gaussian filter, BT=1.0
+        self.bitrate = 250000  # 250kbs
+        self.frequency_deviation = 250000  # 250khz
+        self.rx_bw_dcc_freq = 0b111  # RxBw register = 0xE0
+        self.rx_bw_mantissa = 0b00
+        self.rx_bw_exponent = 0b000
+        self.afc_bw_dcc_freq = 0b111  # AfcBw register = 0xE0
+        self.afc_bw_mantissa = 0b00
+        self.afc_bw_exponent = 0b000
+        self.packet_format = 1  # Variable length
+        self.dc_free = 0b10  # Whitening
+        self.crc_on = 1  # CRC enabled
+        self.crc_auto_clear = 0  # Clear FIFO on CRC fail
+        self.address_filtering = 0b00  # No address filtering
+        # Set transmit power to 13 dBm, a safe value any module supports
+        self.tx_power = 13
+
+    # pylint: disable=no-member
+    # Reconsider this disable when it can be tested.
+    # read_into(_REG_FIFO, packet)
+    def _read_into(self, address, buf):
+        # Read from the specified address into the provided buffer
+        self._spi.init(**_SPI_INIT_ARGS)
+        self._cs.value(0)
+        self._spi.write(bytes([address & 0x7F]))
+        self._spi.readinto(buf)
+        self._cs.value(1)
+
+        return buf
+
+    def _read_u8(self, address):
+        # Read a single byte from the provided address and return it.
+        self._spi.init(**_SPI_INIT_ARGS)
+        self._cs.value(0)
+        self._spi.write(bytes([address & 0x7F]))
+        value = self._spi.read(1)
+        self._cs.value(1)
+
+        return value[0]
+
+    def _write_from(self, address, buf):
+        # Write to the provided address and taken from the provided buffer
+        self._spi.init(**_SPI_INIT_ARGS)
+        self._cs.value(0)
+        self._spi.write(bytes([(address | 0x80) & 0xFF]))
+        self._spi.write(buf)
+        self._cs.value(1)
+
+    def _write_fifo_from(self, buf):
+        # Write to the transmit FIFO and taken from the provided buffer
+        length = len(buf)
+        buf1 = (_REG_FIFO | 0x80) & 0xFF  # Set top bit to 1 to indicate a write
+        buf2 = length & 0xFF  # Set packet length
+
+        self._spi.init(**_SPI_INIT_ARGS)
+        self._cs.value(0)
+        self._spi.write(bytes([buf1, buf2]))  # send address and length
+        self._spi.write(buf)
+        self._cs.value(1)
+
+    def _write_u8(self, address, val):
+        # Write a byte register to the chip.  Specify the 7-bit address and the
+        # 8-bit value to write to that address.
+        address = (address | 0x80) & 0xFF  # Set top bit to 1 to indicate a write
+        val = val & 0xFF
+        self._spi.init(**_SPI_INIT_ARGS)
+        self._cs.value(0)
+        self._spi.write(bytes([address, val]))
+        self._cs.value(1)
