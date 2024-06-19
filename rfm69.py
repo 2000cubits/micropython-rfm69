@@ -111,18 +111,18 @@ DEFAULT_HIGH_POWER = const(False)
 
 class IncomingPacket:
 
-    def __init__(self, id, receiver, sender, rssi, data, flags):
+    def __init__(self, identifier, receiver, sender, rssi, data, flags):
         """Object to represent received packet.
 
         Args:
-            id: (int) A message ID, distinct (over short time scales) for each message sent by a particular node
+            identifier: (int) A message ID, distinct (over short time scales) for each message sent by a particular node
             receiver (int): Node ID of receiver
             sender (int): Node ID of sender
             rssi (int): Received Signal Strength Indicator i.e. the power present in a received radio signal
             data (bytes): Raw transmitted data
             flags (int): A bitmask of flags. The most significant 4 bits are reserved for use by RadioHead. The least significant 4 bits are reserved for applications.
         """
-        self.id = id
+        self.identifier = identifier
         self.received = time.localtime()
         self.receiver = receiver
         self.sender = sender
