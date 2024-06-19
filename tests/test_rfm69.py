@@ -7,36 +7,26 @@ cs = Pin(15, Pin.OUT, value=1)
 reset = Pin(22, Pin.OUT)
 spi = SPI(1, baudrate=50_000, polarity=0, phase=0, bits=8, sck=Pin(10), mosi=Pin(11), miso=Pin(8))
 interrupt = Pin(14)
-rfm69 = RFM69(spi, cs=cs, reset=reset, interrupt=interrupt, frequency=868)
 
+enc = b"mysecretpassword"
+print("Using encryption:", enc.decode("UTF-8"))
+
+rfm69 = RFM69(spi, cs=cs, reset=reset, interrupt=interrupt, frequency=868)
 # Optionally set an encryption key (16 byte AES key). MUST match both
 # on the transmitter and receiver (or be set to None to disable/the default).
-rfm69.encryption_key = (
-    b"\x01\x02\x03\x04\x05\x06\x07\x08\x01\x02\x03\x04\x05\x06\x07\x08"
-)
+rfm69.tx_power = enc
 
 
-async def main():
-    # Print out some chip state:
-    print("Temperature: {0}C".format(rfm69.temperature))
-    print("Frequency: {0}mhz".format(rfm69.frequency_mhz))
-    print("Bit rate: {0}kbit/s".format(rfm69.bitrate / 1000))
-    print("Frequency deviation: {0}hz".format(rfm69.frequency_deviation))
-
-    # Send a packet.  Note you can only send a packet up to 60 bytes in length.
-    # This is a limitation of the radio packet size, so if you need to send larger
-    # amounts of data you will need to break it into smaller send calls.  Each send
-    # call will wait for the previous one to finish before continuing.
-    print("Sending hello world message...")
-
+async def send_packets():
     while True:
-        i = 0
-        while i < 10:
-            await rfm69.send(OutgoingPacket(bytes("Hello world!\r\n", "utf-8"), 1))
-            await asyncio.sleep(5)
-            print("Sent hello world message!")
-            i += 1
+        print("Sending test message to node 1")
+        r = await rfm69.send(OutgoingPacket(bytes("Hello world!\r\n", "utf-8"), 1))
+        print("Sent hello world message!", r)
+        await asyncio.sleep(5)
 
+
+async def receive_packets():
+    while True:
         # Wait to receive packets.  Note that this library can't receive data at a fast
         # rate, in fact it can only receive and process one 60 byte packet at a time.
         # This means you should only use this for low bandwidth scenarios, like sending
@@ -60,6 +50,19 @@ async def main():
             packet_text = str(packet.data, "ascii")
             print("Received (ASCII): {0}".format(packet_text))
 
+
+async def main():
+    # Print out some chip state:
+    print("Temperature: {0}C".format(rfm69.temperature))
+    print("Frequency: {0}mhz".format(rfm69.frequency_mhz))
+    print("Bit rate: {0}kbit/s".format(rfm69.bitrate / 1000))
+    print("Frequency deviation: {0}hz".format(rfm69.frequency_deviation))
+
+    asyncio.create_task(receive_packets())
+    asyncio.create_task(send_packets())
+
+    while True:
+        await asyncio.sleep(100)
 
 loop = asyncio.get_event_loop()
 

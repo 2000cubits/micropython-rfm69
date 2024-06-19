@@ -181,35 +181,35 @@ class RFM69:
             obj._write_u8(self._address, reg_value)
 
     # Control bits from the registers of the chip:
-    data_mode = _RegisterBits(_REG_DATA_MOD, offset=5, bits=2)
-    modulation_type = _RegisterBits(_REG_DATA_MOD, offset=3, bits=2)
-    modulation_shaping = _RegisterBits(_REG_DATA_MOD, offset=0, bits=2)
-    temp_start = _RegisterBits(_REG_TEMP1, offset=3)
-    temp_running = _RegisterBits(_REG_TEMP1, offset=2)
-    sync_on = _RegisterBits(_REG_SYNC_CONFIG, offset=7)
-    sync_size = _RegisterBits(_REG_SYNC_CONFIG, offset=3, bits=3)
-    aes_on = _RegisterBits(_REG_PACKET_CONFIG2, offset=0)
-    pa_0_on = _RegisterBits(_REG_PA_LEVEL, offset=7)
-    pa_1_on = _RegisterBits(_REG_PA_LEVEL, offset=6)
-    pa_2_on = _RegisterBits(_REG_PA_LEVEL, offset=5)
-    output_power = _RegisterBits(_REG_PA_LEVEL, offset=0, bits=5)
-    rx_bw_dcc_freq = _RegisterBits(_REG_RX_BW, offset=5, bits=3)
-    rx_bw_mantissa = _RegisterBits(_REG_RX_BW, offset=3, bits=2)
-    rx_bw_exponent = _RegisterBits(_REG_RX_BW, offset=0, bits=3)
-    afc_bw_dcc_freq = _RegisterBits(_REG_AFC_BW, offset=5, bits=3)
-    afc_bw_mantissa = _RegisterBits(_REG_AFC_BW, offset=3, bits=2)
-    afc_bw_exponent = _RegisterBits(_REG_AFC_BW, offset=0, bits=3)
-    packet_format = _RegisterBits(_REG_PACKET_CONFIG1, offset=7, bits=1)
-    dc_free = _RegisterBits(_REG_PACKET_CONFIG1, offset=5, bits=2)
-    crc_on = _RegisterBits(_REG_PACKET_CONFIG1, offset=4, bits=1)
-    crc_auto_clear_off = _RegisterBits(_REG_PACKET_CONFIG1, offset=3, bits=1)
-    address_filter = _RegisterBits(_REG_PACKET_CONFIG1, offset=1, bits=2)
-    mode_ready = _RegisterBits(_REG_IRQ_FLAGS1, offset=7)
-    rx_ready = _RegisterBits(_REG_IRQ_FLAGS1, offset=6)
-    tx_ready = _RegisterBits(_REG_IRQ_FLAGS1, offset=5)
-    dio_0_mapping = _RegisterBits(_REG_DIO_MAPPING1, offset=6, bits=2)
-    packet_sent = _RegisterBits(_REG_IRQ_FLAGS2, offset=3)
-    payload_ready = _RegisterBits(_REG_IRQ_FLAGS2, offset=2)
+    _data_mode = _RegisterBits(_REG_DATA_MOD, offset=5, bits=2)
+    _modulation_type = _RegisterBits(_REG_DATA_MOD, offset=3, bits=2)
+    _modulation_shaping = _RegisterBits(_REG_DATA_MOD, offset=0, bits=2)
+    _temp_start = _RegisterBits(_REG_TEMP1, offset=3)
+    _temp_running = _RegisterBits(_REG_TEMP1, offset=2)
+    _sync_on = _RegisterBits(_REG_SYNC_CONFIG, offset=7)
+    _sync_size = _RegisterBits(_REG_SYNC_CONFIG, offset=3, bits=3)
+    _aes_on = _RegisterBits(_REG_PACKET_CONFIG2, offset=0)
+    _pa_0_on = _RegisterBits(_REG_PA_LEVEL, offset=7)
+    _pa_1_on = _RegisterBits(_REG_PA_LEVEL, offset=6)
+    _pa_2_on = _RegisterBits(_REG_PA_LEVEL, offset=5)
+    _output_power = _RegisterBits(_REG_PA_LEVEL, offset=0, bits=5)
+    _rx_bw_dcc_freq = _RegisterBits(_REG_RX_BW, offset=5, bits=3)
+    _rx_bw_mantissa = _RegisterBits(_REG_RX_BW, offset=3, bits=2)
+    _rx_bw_exponent = _RegisterBits(_REG_RX_BW, offset=0, bits=3)
+    _afc_bw_dcc_freq = _RegisterBits(_REG_AFC_BW, offset=5, bits=3)
+    _afc_bw_mantissa = _RegisterBits(_REG_AFC_BW, offset=3, bits=2)
+    _afc_bw_exponent = _RegisterBits(_REG_AFC_BW, offset=0, bits=3)
+    _packet_format = _RegisterBits(_REG_PACKET_CONFIG1, offset=7, bits=1)
+    _dc_free = _RegisterBits(_REG_PACKET_CONFIG1, offset=5, bits=2)
+    _crc_on = _RegisterBits(_REG_PACKET_CONFIG1, offset=4, bits=1)
+    _crc_auto_clear_off = _RegisterBits(_REG_PACKET_CONFIG1, offset=3, bits=1)
+    _address_filter = _RegisterBits(_REG_PACKET_CONFIG1, offset=1, bits=2)
+    _mode_ready = _RegisterBits(_REG_IRQ_FLAGS1, offset=7)
+    _rx_ready = _RegisterBits(_REG_IRQ_FLAGS1, offset=6)
+    _tx_ready = _RegisterBits(_REG_IRQ_FLAGS1, offset=5)
+    _dio_0_mapping = _RegisterBits(_REG_DIO_MAPPING1, offset=6, bits=2)
+    _packet_sent = _RegisterBits(_REG_IRQ_FLAGS2, offset=3)
+    _payload_ready = _RegisterBits(_REG_IRQ_FLAGS2, offset=2)
 
     def __init__(
             self,
@@ -325,8 +325,8 @@ class RFM69:
            ... warning:: Reading this will STOP any receiving/sending that might be happening!
         """
         # Start a measurement then poll the measurement finished bit.
-        self.temp_start = 1
-        while self.temp_running > 0:
+        self._temp_start = 1
+        while self._temp_running > 0:
             pass
         # Grab the temperature value and convert it to Celsius.
         # This uses the same observed value formula from the RadioHead library.
@@ -356,7 +356,7 @@ class RFM69:
         self._write_u8(_REG_OP_MODE, op_mode)
 
         # Wait for mode to change by polling interrupt bit
-        while not self.mode_ready:
+        while not self._mode_ready:
             pass
 
     @property
@@ -368,10 +368,10 @@ class RFM69:
            disable synchronization word matching entirely.
         """
         # Handle when sync word is disabled.
-        if not self.sync_on:
+        if not self._sync_on:
             return None
         # Sync word is not disabled so read the current value.
-        sync_word_length = self.sync_size + 1  # Sync word size is offset by 1
+        sync_word_length = self._sync_size + 1  # Sync word size is offset by 1
         # according to datasheet.
         sync_word = bytearray(sync_word_length)
         self._read_into(_REG_SYNC_VALUE1, sync_word)
@@ -382,15 +382,15 @@ class RFM69:
     def sync_word(self, val):
         # Handle disabling sync word when None value is set.
         if val is None:
-            self.sync_on = 0
+            self._sync_on = 0
         else:
             # Check sync word is at most 8 bytes.
             assert 1 <= len(val) <= 8
             # Update the value, size and turn on the sync word.
             self._write_from(_REG_SYNC_VALUE1, val)
-            self.sync_size = len(val) - 1  # Again sync word size is offset by
+            self._sync_size = len(val) - 1  # Again sync word size is offset by
             # 1 according to datasheet.
-            self.sync_on = 1
+            self._sync_on = 1
 
     @property
     def preamble_length(self):
@@ -446,7 +446,7 @@ class RFM69:
            value).
         """
         # Handle if encryption is disabled.
-        if self.aes_on == 0:
+        if self._aes_on == 0:
             return None
         # Encryption is enabled so read the key and return it.
         key = bytearray(16)
@@ -458,12 +458,12 @@ class RFM69:
     def encryption_key(self, val):
         # Handle if unsetting the encryption key (None value).
         if val is None:
-            self.aes_on = 0
+            self._aes_on = 0
         else:
             # Set the encryption key and enable encryption.
             assert len(val) == 16
             self._write_from(_REG_AES_KEY1, val)
-            self.aes_on = 1
+            self._aes_on = 1
 
     @property
     def tx_power(self):
@@ -473,21 +473,21 @@ class RFM69:
         """
         # Follow table 10 truth table from the datasheet for determining power
         # level from the individual PA level bits and output power register.
-        pa0 = self.pa_0_on
-        pa1 = self.pa_1_on
-        pa2 = self.pa_2_on
+        pa0 = self._pa_0_on
+        pa1 = self._pa_1_on
+        pa2 = self._pa_2_on
         if pa0 and not pa1 and not pa2:
             # -18 to 13 dBm range
-            return -18 + self.output_power
+            return -18 + self._output_power
         if not pa0 and pa1 and not pa2:
             # -2 to 13 dBm range
-            return -18 + self.output_power
+            return -18 + self._output_power
         if not pa0 and pa1 and pa2 and not self.high_power:
             # 2 to 17 dBm range
-            return -14 + self.output_power
+            return -14 + self._output_power
         if not pa0 and pa1 and pa2 and self.high_power:
             # 5 to 20 dBm range
-            return -11 + self.output_power
+            return -11 + self._output_power
 
         raise RuntimeError("Power amplifiers in unknown state!")
 
@@ -522,10 +522,10 @@ class RFM69:
             pa_0_on = 1
             output_power = val + 18
         # Set power amplifiers and output power as computed above.
-        self.pa_0_on = pa_0_on
-        self.pa_1_on = pa_1_on
-        self.pa_2_on = pa_2_on
-        self.output_power = output_power
+        self._pa_0_on = pa_0_on
+        self._pa_1_on = pa_1_on
+        self._pa_2_on = pa_2_on
+        self._output_power = output_power
         self._tx_power = val
 
     @property
@@ -718,7 +718,7 @@ class RFM69:
 
         timed_out = False
         try:
-            await asyncio.wait_for_ms(self._packet_sent(), self.xmit_timeout)
+            await asyncio.wait_for_ms(self._wait_for_packet_sent(), self.xmit_timeout)
         except asyncio.TimeoutError:
             timed_out = True
 
@@ -798,7 +798,7 @@ class RFM69:
             self._write_u8(_REG_TEST_PA1, _TEST_PA1_NORMAL)
             self._write_u8(_REG_TEST_PA2, _TEST_PA2_NORMAL)
         # Enable payload ready interrupt for D0 line.
-        self.dio_0_mapping = 0b01
+        self._dio_0_mapping = 0b01
         # Enter RX mode (will clear FIFO!).
         self.operation_mode = RX_MODE
         self._packet_ready_event.clear()
@@ -814,13 +814,13 @@ class RFM69:
             self._write_u8(_REG_TEST_PA1, _TEST_PA1_BOOST)
             self._write_u8(_REG_TEST_PA2, _TEST_PA2_BOOST)
         # Enable packet sent interrupt for D0 line.
-        self.dio_0_mapping = 0b00
+        self._dio_0_mapping = 0b00
         # Enter TX mode (will clear FIFO!).
         self.operation_mode = TX_MODE
         self._interrupt_reset()
 
-    async def _packet_sent(self):
-        while not self.packet_sent:
+    async def _wait_for_packet_sent(self):
+        while not self._packet_sent:
             await asyncio.sleep(0)
 
     def _interrupt_init(self):
@@ -859,20 +859,20 @@ class RFM69:
         # Configure modulation for RadioHead library GFSK_Rb250Fd250 mode by default.
         # Users with advanced knowledge can manually reconfigure for any other mode
         # (consulting the datasheet is absolutely necessary!)
-        self.data_mode = 0b00  # Packet mode
-        self.modulation_type = 0b00  # FSK modulation
-        self.modulation_shaping = 0b01  # Gaussian filter, BT=1.0
+        self._data_mode = 0b00  # Packet mode
+        self._modulation_type = 0b00  # FSK modulation
+        self._modulation_shaping = 0b01  # Gaussian filter, BT=1.0
         self.bitrate = 250000  # 250kbs
         self.frequency_deviation = 250000  # 250khz
-        self.rx_bw_dcc_freq = 0b111  # RxBw register = 0xE0
-        self.rx_bw_mantissa = 0b00
-        self.rx_bw_exponent = 0b000
-        self.afc_bw_dcc_freq = 0b111  # AfcBw register = 0xE0
-        self.afc_bw_mantissa = 0b00
-        self.afc_bw_exponent = 0b000
-        self.packet_format = 1  # Variable length
-        self.dc_free = 0b10  # Whitening
-        self.crc_on = 1  # CRC enabled
+        self._rx_bw_dcc_freq = 0b111  # RxBw register = 0xE0
+        self._rx_bw_mantissa = 0b00
+        self._rx_bw_exponent = 0b000
+        self._afc_bw_dcc_freq = 0b111  # AfcBw register = 0xE0
+        self._afc_bw_mantissa = 0b00
+        self._afc_bw_exponent = 0b000
+        self._packet_format = 1  # Variable length
+        self._dc_free = 0b10  # Whitening
+        self._crc_on = 1  # CRC enabled
         self.crc_auto_clear = 0  # Clear FIFO on CRC fail
         self.address_filtering = 0b00  # No address filtering
         # Set transmit power to 13 dBm, a safe value any module supports
