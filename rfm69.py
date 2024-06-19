@@ -133,10 +133,17 @@ class IncomingPacket:
 
 class OutgoingPacket:
 
-    def __init__(self, data, destination, ack=False, flags=None):
-        if len(data) > _MAX_DATA_LENGTH:
-            raise RuntimeError("The length of the data must be max 60 bytes %d was given" % len(data))
-        self.dest = destination
+    def __init__(self, data, destination=None, ack=False, flags=None):
+        assert 0 < len(data) <= 60
+
+        if destination is None:
+            # destination address - default is broadcast
+            destination = _RH_BROADCAST_ADDRESS
+            """The default destination address for packet transmissions. (0-255).
+               If 255 (0xff) then any receiving node should accept the packet.
+               Second byte of the RadioHead header.
+            """
+        self.destination = destination
         self.flags = flags
         self.ack = ack
         self.data = data
@@ -234,14 +241,14 @@ class RFM69:
         self._packet_buffer = bytearray(_MAX_DATA_LENGTH)
         self._packet_buffer_memview = memoryview(self._packet_buffer)
 
-        self.reset()
+        self._reset()
 
         # Check the version of the chip.
         version = self._read_u8(_REG_VERSION)
         if version != 0x24:
             raise RuntimeError("Failed to find RFM69 with expected version, check wiring!")
 
-        self.idle()  # Enter idle state
+        self._idle()  # Enter idle state
         # Set up the chip in a similar way to the RadioHead RFM69 library
         # Set FIFO TX condition to not empty and the default FIFO threshold to 15
         self._write_u8(_REG_FIFO_THRESH, 0b10001111)
@@ -287,9 +294,9 @@ class RFM69:
            If ACKs are being missed try setting this to .1 or .2.
         """
         # initialize sequence number counter for reliable datagram mode
-        self.sequence_number = 0
+        self._sequence_number = 0
         # create seen Ids list
-        self.seen_ids = bytearray(256)
+        self._seen_ids = bytearray(256)
         # initialize packet header
         # node address - default is broadcast
         self.node = _RH_BROADCAST_ADDRESS
@@ -297,14 +304,9 @@ class RFM69:
            If not 255 (0xff) then only packets address to this node will be accepted.
            First byte of the RadioHead header.
         """
-        # destination address - default is broadcast
-        self.destination = _RH_BROADCAST_ADDRESS
-        """The default destination address for packet transmissions. (0-255).
-           If 255 (0xff) then any receiving node should accept the packet.
-           Second byte of the RadioHead header.
-        """
+        self._destination = _RH_BROADCAST_ADDRESS
         # ID - contains seq count for reliable datagram mode
-        self.identifier = 0
+        self._identifier = 0
         """Automatically set to the sequence number when send_with_ack() used.
            Third byte of the RadioHead header.
         """
@@ -314,57 +316,6 @@ class RFM69:
            Lower 4 bits may be used to pass information.
            Fourth byte of the RadioHead header.
         """
-
-    def reset(self):
-        """Perform a reset of the chip."""
-        # See section 7.2.2 of the datasheet for reset description.
-        self._reset.value(1)  # Set Reset High
-        time.sleep(0.0001)  # 100 us
-        self._reset.value(0)  # set Reset Low
-        time.sleep(0.005)  # 5 ms
-
-    def idle(self):
-        """Enter idle standby mode (switching off high power amplifiers if necessary)."""
-        # Like RadioHead library, turn off high power boost if enabled.
-        if self._tx_power >= 18:
-            self._write_u8(_REG_TEST_PA1, _TEST_PA1_NORMAL)
-            self._write_u8(_REG_TEST_PA2, _TEST_PA2_NORMAL)
-
-        self.operation_mode = STANDBY_MODE
-
-    def sleep(self):
-        """Enter sleep mode."""
-        self.operation_mode = SLEEP_MODE
-
-    def listen(self):
-        """Listen for packets to be received by the chip.  Use :py:func:`receive` to listen, wait
-           and retrieve packets as they're available.
-        """
-        # Like RadioHead library, turn off high power boost if enabled.
-        if self._tx_power >= 18:
-            self._write_u8(_REG_TEST_PA1, _TEST_PA1_NORMAL)
-            self._write_u8(_REG_TEST_PA2, _TEST_PA2_NORMAL)
-        # Enable payload ready interrupt for D0 line.
-        self.dio_0_mapping = 0b01
-        # Enter RX mode (will clear FIFO!).
-        self.operation_mode = RX_MODE
-        self._packet_ready_event.clear()
-        self._interrupt_init()
-
-    def transmit(self):
-        """Transmit a packet which is queued in the FIFO.  This is a low level function for
-           entering transmit mode and more.  For generating and transmitting a packet of data use
-           :py:func:`send` instead.
-        """
-        # Like RadioHead library, turn on high power boost if enabled.
-        if self._tx_power >= 18:
-            self._write_u8(_REG_TEST_PA1, _TEST_PA1_BOOST)
-            self._write_u8(_REG_TEST_PA2, _TEST_PA2_BOOST)
-        # Enable packet sent interrupt for D0 line.
-        self.dio_0_mapping = 0b00
-        # Enter TX mode (will clear FIFO!).
-        self.operation_mode = TX_MODE
-        self._interrupt_reset()
 
     @property
     def temperature(self):
@@ -619,12 +570,17 @@ class RFM69:
         self._write_u8(_REG_FDEV_MSB, fdev >> 8)
         self._write_u8(_REG_FDEV_LSB, fdev & 0xFF)
 
-    async def send(
+    async def send(self, packet: OutgoingPacket):
+        if packet.ack:
+            return await self._send(packet.data, destination=packet.destination, flags=packet.flags)
+        return await self._send_with_ack(packet.data, destination=packet.destination, flags=packet.flags)
+
+    async def _send(
             self,
             data,
             *,
+            destination,
             keep_listening=False,
-            destination=None,
             node=None,
             identifier=None,
             flags=None
@@ -648,7 +604,6 @@ class RFM69:
         # efficient and proper way to ensure a precondition that the provided
         # buffer be within an expected range of bounds.  Disable this check.
         # pylint: disable=len-as-condition
-        assert 0 < len(data) <= 60
 
         try:
             await asyncio.wait_for_ms(self._listen_before_talk(), self.listen_before_talk_timeout)
@@ -656,20 +611,17 @@ class RFM69:
             raise ChannelBusyException("The RF channel is busy")
 
         # pylint: enable=len-as-condition
-        self.idle()  # Stop receiving to clear FIFO and keep it clear.
+        self._idle()  # Stop receiving to clear FIFO and keep it clear.
         # Fill the FIFO with a packet to send.
         # Combine header and data to form payload
         payload = bytearray(4)
-        if destination is None:  # use attribute
-            payload[0] = self.destination
-        else:  # use kwarg
-            payload[0] = destination
+        payload[0] = destination
         if node is None:  # use attribute
             payload[1] = self.node
         else:  # use kwarg
             payload[1] = node
         if identifier is None:  # use attribute
-            payload[2] = self.identifier
+            payload[2] = self._identifier
         else:  # use kwarg
             payload[2] = identifier
         if flags is None:  # use attribute
@@ -680,7 +632,7 @@ class RFM69:
         # Write payload to transmit fifo
         self._write_fifo_from(payload)
         # Turn on transmit mode to send out the packet
-        self.transmit()
+        self._transmit()
 
         timed_out = False
         try:
@@ -688,23 +640,16 @@ class RFM69:
         except asyncio.TimeoutError:
             timed_out = True
 
-        # Listen again if requested.
+        # Listen again if requested
         if keep_listening:
-            self.listen()
-        # Enter idle mode to stop receiving other packets.
+            self._listen()
         else:
-            self.idle()
+            # Enter idle mode to stop receiving other packets
+            self._idle()
 
         return not timed_out
 
-    async def _packet_sent(self):
-        while not self.packet_sent:
-            await asyncio.sleep(0)
-
-    async def broadcast(self, data, flags=None):
-        await self.send(data, flags=flags, destination=_RH_BROADCAST_ADDRESS)
-
-    async def send_with_ack(self, data, flags=None):
+    async def _send_with_ack(self, data, destination=None, flags=None):
         """Reliable Datagram mode:
            Send a packet with data and wait for an ACK response.
            The packet header is automatically generated.
@@ -715,12 +660,12 @@ class RFM69:
         else:
             retries_remaining = 1
         got_ack = False
-        self.sequence_number = (self.sequence_number + 1) & 0xFF
+        self._sequence_number = (self._sequence_number + 1) & 0xFF
         while not got_ack and retries_remaining:
-            self.identifier = self.sequence_number
-            await self.send(data, flags=flags, keep_listening=True)
+            _identifier = self._sequence_number
+            await self._send(data, destination=destination, identifier=self._identifier, flags=flags, keep_listening=True)
             # Don't look for ACK from Broadcast message
-            if self.destination == _RH_BROADCAST_ADDRESS:
+            if self._destination == _RH_BROADCAST_ADDRESS:
                 got_ack = True
             else:
                 # wait for a packet from our destination
@@ -728,7 +673,7 @@ class RFM69:
                 if ack_packet is not None:
                     if ack_packet.flags & _RH_FLAGS_ACK:
                         # check the ID
-                        if ack_packet.id == self.identifier:
+                        if ack_packet.id == _identifier:
                             got_ack = True
                             break
             # pause before next retry -- random delay
@@ -742,6 +687,9 @@ class RFM69:
         self._flags = 0  # clear flags
 
         return got_ack
+
+    async def broadcast(self, packet: OutgoingPacket):
+        await self._send(packet.data, destination=_RH_BROADCAST_ADDRESS, flags=packet.flags, identifier=self._identifier)
 
     # pylint: disable=too-many-branches
     async def receive(
@@ -764,7 +712,7 @@ class RFM69:
         if timeout is None:
             timeout = self.receive_timeout
 
-        self.listen()
+        self._listen()
 
         try:
             await asyncio.wait_for_ms(self._packet_ready_event, timeout)
@@ -777,7 +725,7 @@ class RFM69:
         # save last RSSI reading
         self.last_rssi = self.rssi
         # Enter idle mode to stop receiving other packets.
-        self.idle()
+        self._idle()
         if not timed_out:
             # Read the length of the FIFO.
             fifo_length = self._read_u8(_REG_FIFO)
@@ -799,7 +747,7 @@ class RFM69:
                     if self.ack_delay is not None:
                         await asyncio.sleep_ms(self.ack_delay)
                     # send ACK packet to sender
-                    await self.send(
+                    await self._send(
                         bytes("!", "UTF-8"),
                         destination=header[1],
                         node=header[0],
@@ -807,21 +755,76 @@ class RFM69:
                         flags=(header[3] | _RH_FLAGS_ACK)
                     )
                     # reject retries if we have seen this identifier from this source before
-                    if self.seen_ids[header[1]] == header[2] and header[3] & _RH_FLAGS_RETRY:
+                    if self._seen_ids[header[1]] == header[2] and header[3] & _RH_FLAGS_RETRY:
                         packet = None
                     else:  # save the packet identifier for this source
-                        self.seen_ids[header[1]] = header[2]
+                        self._seen_ids[header[1]] = header[2]
         # Listen again if necessary and return the result packet.
         if keep_listening:
-            self.listen()
+            self._listen()
         else:
             # Enter idle mode to stop receiving other packets.
-            self.idle()
+            self._idle()
 
         if packet is not None:
             return IncomingPacket(header[2], header[0], header[1], self.last_rssi, bytes(packet), header[3])
 
         return packet
+
+    def _reset(self):
+        """Perform a reset of the chip."""
+        # See section 7.2.2 of the datasheet for reset description.
+        self._reset.value(1)  # Set Reset High
+        time.sleep(0.0001)  # 100 us
+        self._reset.value(0)  # set Reset Low
+        time.sleep(0.005)  # 5 ms
+
+    def _idle(self):
+        """Enter idle standby mode (switching off high power amplifiers if necessary)."""
+        # Like RadioHead library, turn off high power boost if enabled.
+        if self._tx_power >= 18:
+            self._write_u8(_REG_TEST_PA1, _TEST_PA1_NORMAL)
+            self._write_u8(_REG_TEST_PA2, _TEST_PA2_NORMAL)
+
+        self.operation_mode = STANDBY_MODE
+
+    def _sleep(self):
+        """Enter sleep mode."""
+        self.operation_mode = SLEEP_MODE
+
+    def _listen(self):
+        """Listen for packets to be received by the chip.  Use :py:func:`receive` to listen, wait
+           and retrieve packets as they're available.
+        """
+        # Like RadioHead library, turn off high power boost if enabled.
+        if self._tx_power >= 18:
+            self._write_u8(_REG_TEST_PA1, _TEST_PA1_NORMAL)
+            self._write_u8(_REG_TEST_PA2, _TEST_PA2_NORMAL)
+        # Enable payload ready interrupt for D0 line.
+        self.dio_0_mapping = 0b01
+        # Enter RX mode (will clear FIFO!).
+        self.operation_mode = RX_MODE
+        self._packet_ready_event.clear()
+        self._interrupt_init()
+
+    def _transmit(self):
+        """Transmit a packet which is queued in the FIFO.  This is a low level function for
+           entering transmit mode and more.  For generating and transmitting a packet of data use
+           :py:func:`send` instead.
+        """
+        # Like RadioHead library, turn on high power boost if enabled.
+        if self._tx_power >= 18:
+            self._write_u8(_REG_TEST_PA1, _TEST_PA1_BOOST)
+            self._write_u8(_REG_TEST_PA2, _TEST_PA2_BOOST)
+        # Enable packet sent interrupt for D0 line.
+        self.dio_0_mapping = 0b00
+        # Enter TX mode (will clear FIFO!).
+        self.operation_mode = TX_MODE
+        self._interrupt_reset()
+
+    async def _packet_sent(self):
+        while not self.packet_sent:
+            await asyncio.sleep(0)
 
     def _interrupt_init(self):
         self._interrupt.irq(handler=None)
@@ -842,7 +845,7 @@ class RFM69:
     def _can_send(self) -> bool:
         # if signal stronger than the given threshold is detected assume channel activity
         if self.operation_mode == RX_MODE and self.rssi < self.rssi_threshold:
-            self.idle()
+            self._idle()
 
             return True
 
@@ -850,7 +853,7 @@ class RFM69:
 
     async def _listen_before_talk(self):
         # Listen before talk
-        self.listen()
+        self._listen()
 
         while not self._can_send():
             await asyncio.sleep(0)
