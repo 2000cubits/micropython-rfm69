@@ -571,8 +571,10 @@ class RFM69:
         self._write_u8(_REG_FDEV_LSB, fdev & 0xFF)
 
     async def send(self, packet: OutgoingPacket):
+        # send with ack
         if packet.ack:
             return await self._send(packet.data, destination=packet.destination, flags=packet.flags)
+
         return await self._send_with_ack(packet.data, destination=packet.destination, flags=packet.flags)
 
     async def _send(
@@ -582,7 +584,6 @@ class RFM69:
             destination,
             keep_listening=False,
             node=None,
-            identifier=None,
             flags=None
     ):
         """Send a string of data using the transmitter.
@@ -620,14 +621,12 @@ class RFM69:
             payload[1] = self.node
         else:  # use kwarg
             payload[1] = node
-        if identifier is None:  # use attribute
-            payload[2] = self._identifier
-        else:  # use kwarg
-            payload[2] = identifier
-        if flags is None:  # use attribute
-            payload[3] = self._flags
-        else:  # use kwarg
-            payload[3] = flags
+
+        self._sequence_number = (self._sequence_number + 1) & 0xFF
+
+        payload[2] = self._sequence_number
+        payload[3] = flags
+
         payload = payload + data
         # Write payload to transmit fifo
         self._write_fifo_from(payload)
@@ -660,10 +659,8 @@ class RFM69:
         else:
             retries_remaining = 1
         got_ack = False
-        self._sequence_number = (self._sequence_number + 1) & 0xFF
         while not got_ack and retries_remaining:
-            _identifier = self._sequence_number
-            await self._send(data, destination=destination, identifier=self._identifier, flags=flags, keep_listening=True)
+            await self._send(data, destination=destination, flags=flags, keep_listening=True)
             # Don't look for ACK from Broadcast message
             if self._destination == _RH_BROADCAST_ADDRESS:
                 got_ack = True
@@ -673,7 +670,7 @@ class RFM69:
                 if ack_packet is not None:
                     if ack_packet.flags & _RH_FLAGS_ACK:
                         # check the ID
-                        if ack_packet.id == _identifier:
+                        if ack_packet.id == self._sequence_number:
                             got_ack = True
                             break
             # pause before next retry -- random delay
@@ -689,7 +686,7 @@ class RFM69:
         return got_ack
 
     async def broadcast(self, packet: OutgoingPacket):
-        await self._send(packet.data, destination=_RH_BROADCAST_ADDRESS, flags=packet.flags, identifier=self._identifier)
+        await self._send(packet.data, destination=_RH_BROADCAST_ADDRESS, flags=packet.flags)
 
     # pylint: disable=too-many-branches
     async def receive(
