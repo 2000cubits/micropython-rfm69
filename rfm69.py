@@ -570,12 +570,95 @@ class RFM69:
         self._write_u8(_REG_FDEV_MSB, fdev >> 8)
         self._write_u8(_REG_FDEV_LSB, fdev & 0xFF)
 
-    async def send(self, packet: OutgoingPacket):
+    async def send(self, packet: OutgoingPacket) -> bool:
         # send with ack
         if packet.ack:
             return await self._send(packet.data, destination=packet.destination, flags=packet.flags)
 
         return await self._send_with_ack(packet.data, destination=packet.destination, flags=packet.flags)
+
+    async def broadcast(self, packet: OutgoingPacket) -> bool:
+        return await self._send(packet.data, destination=_RH_BROADCAST_ADDRESS, flags=packet.flags)
+
+    # pylint: disable=too-many-branches
+    async def receive(
+            self, *, keep_listening=True, with_ack=False, timeout=None
+    ):
+        """Wait to receive a packet from the receiver. If a packet is found the payload bytes
+           are returned, otherwise None is returned (which indicates the timeout elapsed with no
+           reception).
+           If keep_listening is True (the default) the chip will immediately enter listening mode
+           after reception of a packet, otherwise it will fall back to idle mode and ignore any
+           future reception.
+           All packets must have a 4 byte header for compatibility with the RadioHead library.
+           The header consists of 4 bytes (To,From,ID,Flags). The default setting will strip
+           the header before returning the packet to the caller.
+           If with_header is True then the 4 byte header will be returned with the packet.
+           The payload then begins at packet[4].
+           If with_ack is True, send an ACK after receipt (Reliable Datagram mode)
+        """
+        timed_out = False
+        if timeout is None:
+            timeout = self.receive_timeout
+
+        self._listen()
+
+        try:
+            await asyncio.wait_for_ms(self._packet_ready_event, timeout)
+        except TimeoutError:
+            raise
+
+        # Payload ready is set, a packet is in the FIFO.
+        packet = None
+        header = None
+        # save last RSSI reading
+        self.last_rssi = self.rssi
+        # Enter idle mode to stop receiving other packets.
+        self._idle()
+        if not timed_out:
+            # Read the length of the FIFO.
+            fifo_length = self._read_u8(_REG_FIFO)
+            # Handle if the received packet is too small to include the 4 byte
+            # RadioHead header and at least one byte of data --reject this packet and ignore it.
+            if fifo_length > 0:  # read and clear the FIFO if anything in it
+                self._read_into(_REG_FIFO, self._packet_buffer)
+            if fifo_length < 5:
+                packet = None
+            else:
+                # copy out packet
+                packet = self._packet_buffer_memview[4:fifo_length]
+                header = self._packet_buffer_memview[0:4]
+                if self.node != _RH_BROADCAST_ADDRESS and header[0] != _RH_BROADCAST_ADDRESS and header[0] != self.node:
+                    packet = None
+                # send ACK unless this was an ACK or a broadcast
+                elif with_ack and ((header[3] & _RH_FLAGS_ACK) == 0) and (header[0] != _RH_BROADCAST_ADDRESS):
+                    # delay before sending Ack to give receiver a chance to get ready
+                    if self.ack_delay is not None:
+                        await asyncio.sleep_ms(self.ack_delay)
+                    # send ACK packet to sender
+                    await self._send(
+                        bytes("!", "UTF-8"),
+                        destination=header[1],
+                        node=header[0],
+                        identifier=header[2],
+                        flags=(header[3] | _RH_FLAGS_ACK)
+                    )
+                    # reject retries if we have seen this identifier from this source before
+                    if self._seen_ids[header[1]] == header[2] and header[3] & _RH_FLAGS_RETRY:
+                        packet = None
+                    else:  # save the packet identifier for this source
+                        self._seen_ids[header[1]] = header[2]
+        # Listen again if necessary and return the result packet.
+        if keep_listening:
+            self._listen()
+        else:
+            # Enter idle mode to stop receiving other packets.
+            self._idle()
+
+        if packet is not None:
+            return IncomingPacket(header[2], header[0], header[1], self.last_rssi, bytes(packet), header[3])
+
+        return packet
 
     async def _send(
             self,
@@ -684,89 +767,6 @@ class RFM69:
         self._flags = 0  # clear flags
 
         return got_ack
-
-    async def broadcast(self, packet: OutgoingPacket):
-        await self._send(packet.data, destination=_RH_BROADCAST_ADDRESS, flags=packet.flags)
-
-    # pylint: disable=too-many-branches
-    async def receive(
-            self, *, keep_listening=True, with_ack=False, timeout=None
-    ):
-        """Wait to receive a packet from the receiver. If a packet is found the payload bytes
-           are returned, otherwise None is returned (which indicates the timeout elapsed with no
-           reception).
-           If keep_listening is True (the default) the chip will immediately enter listening mode
-           after reception of a packet, otherwise it will fall back to idle mode and ignore any
-           future reception.
-           All packets must have a 4 byte header for compatibility with the RadioHead library.
-           The header consists of 4 bytes (To,From,ID,Flags). The default setting will strip
-           the header before returning the packet to the caller.
-           If with_header is True then the 4 byte header will be returned with the packet.
-           The payload then begins at packet[4].
-           If with_ack is True, send an ACK after receipt (Reliable Datagram mode)
-        """
-        timed_out = False
-        if timeout is None:
-            timeout = self.receive_timeout
-
-        self._listen()
-
-        try:
-            await asyncio.wait_for_ms(self._packet_ready_event, timeout)
-        except TimeoutError:
-            raise
-
-        # Payload ready is set, a packet is in the FIFO.
-        packet = None
-        header = None
-        # save last RSSI reading
-        self.last_rssi = self.rssi
-        # Enter idle mode to stop receiving other packets.
-        self._idle()
-        if not timed_out:
-            # Read the length of the FIFO.
-            fifo_length = self._read_u8(_REG_FIFO)
-            # Handle if the received packet is too small to include the 4 byte
-            # RadioHead header and at least one byte of data --reject this packet and ignore it.
-            if fifo_length > 0:  # read and clear the FIFO if anything in it
-                self._read_into(_REG_FIFO, self._packet_buffer)
-            if fifo_length < 5:
-                packet = None
-            else:
-                # copy out packet
-                packet = self._packet_buffer_memview[4:fifo_length]
-                header = self._packet_buffer_memview[0:4]
-                if self.node != _RH_BROADCAST_ADDRESS and header[0] != _RH_BROADCAST_ADDRESS and header[0] != self.node:
-                    packet = None
-                # send ACK unless this was an ACK or a broadcast
-                elif with_ack and ((header[3] & _RH_FLAGS_ACK) == 0) and (header[0] != _RH_BROADCAST_ADDRESS):
-                    # delay before sending Ack to give receiver a chance to get ready
-                    if self.ack_delay is not None:
-                        await asyncio.sleep_ms(self.ack_delay)
-                    # send ACK packet to sender
-                    await self._send(
-                        bytes("!", "UTF-8"),
-                        destination=header[1],
-                        node=header[0],
-                        identifier=header[2],
-                        flags=(header[3] | _RH_FLAGS_ACK)
-                    )
-                    # reject retries if we have seen this identifier from this source before
-                    if self._seen_ids[header[1]] == header[2] and header[3] & _RH_FLAGS_RETRY:
-                        packet = None
-                    else:  # save the packet identifier for this source
-                        self._seen_ids[header[1]] = header[2]
-        # Listen again if necessary and return the result packet.
-        if keep_listening:
-            self._listen()
-        else:
-            # Enter idle mode to stop receiving other packets.
-            self._idle()
-
-        if packet is not None:
-            return IncomingPacket(header[2], header[0], header[1], self.last_rssi, bytes(packet), header[3])
-
-        return packet
 
     def _reset(self):
         """Perform a reset of the chip."""
